@@ -37,8 +37,8 @@ To run the project, you need to set up your Python environment and install the n
 
 1. Clone the repository:
    ```bash
-   git clone 
-   cd dti-prediction
+   git clone https://github.com/Setsofia-lab/CRISPY_DTI.git
+   cd CRISPY_DTI
    ```
 
 2. Create and activate a virtual environment (optional but recommended):
