@@ -149,7 +149,6 @@ class XGBoostClassifier:
         # Plot ROC curve
         self.plot_roc_curve(X, y)
 
-# Example usage:
 def main():
     # Generate sample data (replace with your actual data)
     np.random.seed(42)
@@ -164,14 +163,80 @@ def main():
     classifier = XGBoostClassifier()
     classifier.train(X_train, y_train, X_val, y_val)
     
-    # Evaluate model
+    # Evaluate on training set
+    print("\nTraining Set Evaluation:")
+    print("------------------------")
+    classifier.evaluate(X_train, y_train)
+    
+    # Evaluate on validation set
+    print("\nValidation Set Evaluation:")
+    print("-------------------------")
+    classifier.evaluate(X_val, y_val)
+    
+    # Evaluate on test set
     print("\nTest Set Evaluation:")
     print("-------------------")
     classifier.evaluate(X_test, y_test)
     
+    # Print final summary
+    print("\nFinal Model Performance Summary:")
+    print("--------------------------------")
+    
+    # Calculate and display metrics for all sets
+    train_pred = classifier.predict(X_train)
+    val_pred = classifier.predict(X_val)
+    test_pred = classifier.predict(X_test)
+    
+    train_acc = (train_pred == y_train).mean()
+    val_acc = (val_pred == y_val).mean()
+    test_acc = (test_pred == y_test).mean()
+    
+    print(f"Training Accuracy: {train_acc:.4f}")
+    print(f"Validation Accuracy: {val_acc:.4f}")
+    print(f"Test Accuracy: {test_acc:.4f}")
+    
+    # Check for potential overfitting
+    if train_acc - test_acc > 0.05:  # If training accuracy is significantly higher
+        print("\nNote: There might be some overfitting as the training accuracy is")
+        print(f"significantly higher than the test accuracy (difference: {train_acc - test_acc:.4f})")
+        print("Consider:")
+        print("- Adjusting max_depth parameter")
+        print("- Increasing min_child_weight")
+        print("- Adjusting regularization parameters (lambda, alpha)")
+        print("- Using early stopping with more rounds")
+        print("- Adding more training data")
+
     # Plot feature importance
     feature_names = [f'Feature_{i}' for i in range(X.shape[1])]
     classifier.plot_feature_importance(feature_names)
 
 if __name__ == "__main__":
     main()
+
+# # Example usage:
+# def main():
+#     # Generate sample data (replace with your actual data)
+#     np.random.seed(42)
+#     X = np.random.randn(1000, 20)
+#     y = (X[:, 0] + X[:, 1] + np.random.randn(1000) > 0).astype(int)
+    
+#     # Split data
+#     X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.4, random_state=42)
+#     X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+    
+#     # Initialize and train model
+#     classifier = XGBoostClassifier()
+#     classifier.train(X_train, y_train, X_val, y_val)
+    
+    
+#     # Evaluate model
+#     print("\nTest Set Evaluation:")
+#     print("-------------------")
+#     classifier.evaluate(X_test, y_test)
+    
+#     # Plot feature importance
+#     feature_names = [f'Feature_{i}' for i in range(X.shape[1])]
+#     classifier.plot_feature_importance(feature_names)
+
+# if __name__ == "__main__":
+#     main()
