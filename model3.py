@@ -1,467 +1,443 @@
 import numpy as np
 import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, roc_curve, auc
 import matplotlib.pyplot as plt
 import seaborn as sns
+from typing import List, Tuple, Optional
 
-class SquaredErrorObjective:
-    def loss(self, y, pred): 
-        return np.mean((y - pred)**2)
+class CustomDataset(Dataset):
+    """Custom Dataset for PyTorch DataLoader"""
+    def __init__(self, X, y):
+        self.X = torch.FloatTensor(X)
+        self.y = torch.FloatTensor(y)
+        
+    def __len__(self):
+        return len(self.X)
     
-    def gradient(self, y, pred): 
-        return pred - y
-    
-    def hessian(self, y, pred): 
-        return np.ones(len(y))
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
 
-class TreeNode:
-    def __init__(self):
-        self.feature_idx = None
-        self.threshold = None
-        self.left = None
-        self.right = None
-        self.is_leaf = False
-        self.score = None
-    
-    def predict(self, x):
-        if self.is_leaf:
-            return self.score
+class MLP(nn.Module):
+    """Multilayer Perceptron Model"""
+    def __init__(self, input_size: int, hidden_layers: List[int], dropout_rate: float = 0.2):
+        super(MLP, self).__init__()
         
-        if x[self.feature_idx] <= self.threshold:
-            return self.left.predict(x)
-        else:
-            return self.right.predict(x)
+        # Create list to hold all layers
+        layers = []
+        
+        # Input layer
+        prev_size = input_size
+        
+        # Add hidden layers with dropout
+        for hidden_size in hidden_layers:
+            layers.extend([
+                nn.Linear(prev_size, hidden_size),
+                nn.ReLU(),
+                nn.BatchNorm1d(hidden_size),
+                nn.Dropout(dropout_rate)
+            ])
+            prev_size = hidden_size
+        
+        # Output layer
+        layers.append(nn.Linear(prev_size, 1))
+        layers.append(nn.Sigmoid())
+        
+        # Combine all layers
+        self.network = nn.Sequential(*layers)
+        
+    def forward(self, x):
+        return self.network(x)
 
-class TreeBooster:
-    def __init__(self, max_depth, gamma, min_child_weight, subsample=1.0):
-        self.max_depth = max_depth
-        self.gamma = gamma
-        self.min_child_weight = min_child_weight
-        self.subsample = subsample
-        self.root = None
-    
-    def find_best_split(self, X, g, h, row_indices):
-        best_gain = 0
-        best_feature = None
-        best_threshold = None
-        best_left_indices = None
-        best_right_indices = None
+class MLPClassifier:
+    def __init__(self, 
+                 input_size: int,
+                 hidden_layers: List[int] = [128, 64, 32],
+                 learning_rate: float = 0.001,
+                 batch_size: int = 32,
+                 dropout_rate: float = 0.2,
+                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         
-        n_features = X.shape[1]
+        self.input_size = input_size
+        self.hidden_layers = hidden_layers
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.device = device
+        self.dropout_rate = dropout_rate
         
-        G = np.sum(g[row_indices])
-        H = np.sum(h[row_indices])
-        current_score = -(G * G) / (H + self.gamma)
+        # Initialize model
+        self.model = MLP(input_size, hidden_layers, dropout_rate).to(device)
+        self.scaler = StandardScaler()
         
-        for feature in range(n_features):
-            feature_values = X[row_indices, feature]
-            sorted_indices = np.argsort(feature_values)
-            sorted_feature_values = feature_values[sorted_indices]
-            
-            unique_values = np.unique(sorted_feature_values)
-            if len(unique_values) == 1:
-                continue
-            
-            thresholds = (unique_values[:-1] + unique_values[1:]) / 2
-            
-            for threshold in thresholds:
-                left_mask = feature_values <= threshold
-                right_mask = ~left_mask
-                
-                left_indices = row_indices[left_mask]
-                right_indices = row_indices[right_mask]
-                
-                if len(left_indices) < self.min_child_weight or len(right_indices) < self.min_child_weight:
-                    continue
-                
-                GL = np.sum(g[left_indices])
-                HL = np.sum(h[left_indices])
-                GR = np.sum(g[right_indices])
-                HR = np.sum(h[right_indices])
-                
-                gain = (GL * GL) / (HL + self.gamma) + (GR * GR) / (HR + self.gamma) - current_score
-                
-                if gain > best_gain:
-                    best_gain = gain
-                    best_feature = feature
-                    best_threshold = threshold
-                    best_left_indices = left_indices
-                    best_right_indices = right_indices
+        # Initialize optimizer and loss function
+        self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
+        self.criterion = nn.BCELoss()
         
-        return best_gain, best_feature, best_threshold, best_left_indices, best_right_indices
-    
-    def build_tree(self, X, g, h, row_indices, depth=0):
-        node = TreeNode()
-        
-        G = np.sum(g[row_indices])
-        H = np.sum(h[row_indices])
-        
-        if depth == self.max_depth or len(row_indices) < self.min_child_weight:
-            node.is_leaf = True
-            node.score = -G / (H + self.gamma)
-            return node
-        
-        gain, feature, threshold, left_indices, right_indices = self.find_best_split(X, g, h, row_indices)
-        
-        if gain < self.gamma or feature is None:
-            node.is_leaf = True
-            node.score = -G / (H + self.gamma)
-            return node
-        
-        node.feature_idx = feature
-        node.threshold = threshold
-        node.left = self.build_tree(X, g, h, left_indices, depth + 1)
-        node.right = self.build_tree(X, g, h, right_indices, depth + 1)
-        
-        return node
-    
-    def fit(self, X, g, h):
-        n_samples = X.shape[0]
-        if self.subsample < 1.0:
-            n_subsample = int(n_samples * self.subsample)
-            row_indices = np.random.choice(n_samples, n_subsample, replace=False)
-        else:
-            row_indices = np.arange(n_samples)
-        
-        self.root = self.build_tree(X, g, h, row_indices)
-    
-    def predict(self, X):
-        if isinstance(X, pd.DataFrame):
-            X = X.values
-        return np.array([self.root.predict(x) for x in X])
-
-class XGBoostModel:
-    def __init__(self, params, random_seed=None):
-        self.learning_rate = params.get('learning_rate', 0.1)
-        self.max_depth = params.get('max_depth', 6)
-        self.subsample = params.get('subsample', 1.0)
-        self.reg_lambda = params.get('reg_lambda', 1.0)
-        self.gamma = params.get('gamma', 0.0)
-        self.min_child_weight = params.get('min_child_weight', 1)
-        self.base_score = params.get('base_score', 0.0)
-        self.trees = []
-        
-        if random_seed is not None:
-            np.random.seed(random_seed)
-    
-    def fit(self, X, y, objective, num_boost_round=100, verbose=False):
-        if isinstance(X, pd.DataFrame):
-            X = X.values
-        if isinstance(y, pd.Series):
-            y = y.values
-        
-        pred = np.full(len(y), self.base_score)
-        train_loss_history = []
-        
-        for boost_round in range(num_boost_round):
-            grad = objective.gradient(y, pred)
-            hess = objective.hessian(y, pred)
-            
-            tree = TreeBooster(
-                max_depth=self.max_depth,
-                gamma=self.gamma,
-                min_child_weight=self.min_child_weight,
-                subsample=self.subsample
-            )
-            tree.fit(X, grad, hess)
-            
-            update = tree.predict(X)
-            pred += self.learning_rate * update
-            self.trees.append(tree)
-            
-            loss = objective.loss(y, pred)
-            train_loss_history.append(loss)
-            
-            if verbose and (boost_round + 1) % 10 == 0:
-                print(f"Boost round {boost_round + 1}, train loss: {loss:.6f}")
-        
-        return train_loss_history
-    
-    def predict(self, X):
-        if isinstance(X, pd.DataFrame):
-            X = X.values
-        
-        pred = np.full(len(X), self.base_score)
-        for tree in self.trees:
-            pred += self.learning_rate * tree.predict(X)
-        return 1 / (1 + np.exp(-pred))  # Sigmoid for binary classification
-    
-def calculate_metrics(y_true, y_pred):
-    """Calculate basic classification metrics"""
-    y_pred_binary = (y_pred > 0.5).astype(int)
-    cm = confusion_matrix(y_true, y_pred_binary)
-    tn, fp, fn, tp = cm.ravel()
-    
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    accuracy = (tp + tn) / (tp + tn + fp + fn)
-    
-    return {
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1': f1
-    }
-
-def plot_confusion_matrix_with_metrics(y_true, y_pred, title):
-    """Plot confusion matrix with metrics"""
-    # Calculate metrics
-    metrics = calculate_metrics(y_true, y_pred)
-    
-    # Create confusion matrix
-    y_pred_binary = (y_pred > 0.5).astype(int)
-    cm = confusion_matrix(y_true, y_pred_binary)
-    
-    # Create figure with subplot
-    fig = plt.figure(figsize=(12, 6))
-    
-    # Create grid specification for layout
-    gs = fig.add_gridspec(1, 2, width_ratios=[1.5, 1])
-    
-    # Confusion matrix subplot
-    ax0 = fig.add_subplot(gs[0])
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax0)
-    ax0.set_title(f'Confusion Matrix - {title}')
-    ax0.set_ylabel('True Label')
-    ax0.set_xlabel('Predicted Label')
-    
-    # Metrics subplot
-    ax1 = fig.add_subplot(gs[1])
-    metrics_data = pd.DataFrame(
-        list(metrics.values()),
-        index=list(metrics.keys()),
-        columns=['Score']
-    )
-    
-    # Create a bar plot for metrics
-    colors = ['#2ecc71', '#3498db', '#e74c3c', '#f1c40f']
-    bars = ax1.barh(
-        range(len(metrics)),
-        metrics_data['Score'],
-        color=colors
-    )
-    
-    # Customize metrics visualization
-    ax1.set_yticks(range(len(metrics)))
-    ax1.set_yticklabels([m.capitalize() for m in metrics.keys()])
-    ax1.set_xlim(0, 1)
-    ax1.set_title('Performance Metrics')
-    ax1.grid(True, axis='x', alpha=0.3)
-    
-    # Add value labels on bars
-    for bar in bars:
-        width = bar.get_width()
-        ax1.text(
-            width + 0.01,
-            bar.get_y() + bar.get_height()/2,
-            f'{width:.3f}',
-            va='center'
-        )
-    
-    plt.tight_layout()
-    plt.show()
-    
-    return metrics
-
-# Update the train_and_evaluate function to use the new plotting function
-def train_and_evaluate(train_data_path, test_data_path, val_size=0.2):
-    """Train and evaluate XGBoost model"""
-    # Load data
-    df_train = pd.read_csv(train_data_path)
-    X = df_train.drop('Label', axis=1)
-    y = df_train['Label']
-    
-    # Split into train and validation
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=val_size, random_state=42, stratify=y
-    )
-    
-    print(f"Training set shape: {X_train.shape}")
-    print(f"Validation set shape: {X_val.shape}")
-    
-    # Model parameters
-    params = {
-        'learning_rate': 0.1,
-        'max_depth': 6,
-        'subsample': 0.8,
-        'reg_lambda': 1.5,
-        'gamma': 0.1,
-        'min_child_weight': 25,
-        'base_score': 0.0,
-    }
-    
-    # Train model
-    model = XGBoostModel(params, random_seed=42)
-    loss_history = model.fit(
-        X_train, y_train,
-        SquaredErrorObjective(),
-        num_boost_round=100,
-        verbose=True
-    )
-    
-    # Plot training loss
-    plt.figure(figsize=(10, 6))
-    plt.plot(loss_history)
-    plt.xlabel('Boost Round')
-    plt.ylabel('Training Loss')
-    plt.title('Training Loss vs Boosting Rounds')
-    plt.show()
-    
-    # Make predictions
-    train_pred = model.predict(X_train)
-    val_pred = model.predict(X_val)
-    
-    # Plot confusion matrices with metrics
-    train_metrics = plot_confusion_matrix_with_metrics(y_train, train_pred, 'Training Set')
-    val_metrics = plot_confusion_matrix_with_metrics(y_val, val_pred, 'Validation Set')
-    
-    # Evaluate on test set
-    df_test = pd.read_csv(test_data_path)
-    X_test = df_test.drop('Label', axis=1)
-    y_test = df_test['Label']
-    
-    test_pred = model.predict(X_test)
-    test_metrics = plot_confusion_matrix_with_metrics(y_test, test_pred, 'Test Set')
-    
-    return {
-        'model': model,
-        'loss_history': loss_history,
-        'predictions': {
-            'train': train_pred,
-            'val': val_pred,
-            'test': test_pred
-        },
-        'metrics': {
-            'train': train_metrics,
-            'val': val_metrics,
-            'test': test_metrics
+        # Training history
+        self.history = {
+            'train_loss': [],
+            'val_loss': [],
+            'train_acc': [],
+            'val_acc': []
         }
-    }
-
-# def plot_confusion_matrix(y_true, y_pred, title):
-#     """Plot confusion matrix"""
-#     cm = confusion_matrix(y_true, (y_pred > 0.5).astype(int))
-#     plt.figure(figsize=(8, 6))
-#     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-#     plt.title(f'Confusion Matrix - {title}')
-#     plt.ylabel('True Label')
-#     plt.xlabel('Predicted Label')
-#     plt.show()
-
-# def calculate_metrics(y_true, y_pred):
-#     """Calculate basic classification metrics"""
-#     y_pred_binary = (y_pred > 0.5).astype(int)
-#     cm = confusion_matrix(y_true, y_pred_binary)
-#     tn, fp, fn, tp = cm.ravel()
     
-#     precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-#     recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-#     f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-#     accuracy = (tp + tn) / (tp + tn + fp + fn)
+    def preprocess_data(self, X, y=None, is_training: bool = True):
+        """Preprocess features with standardization"""
+        if is_training:
+            X_scaled = self.scaler.fit_transform(X)
+        else:
+            X_scaled = self.scaler.transform(X)
+        
+        if y is not None:
+            return X_scaled, y
+        return X_scaled
     
-#     return {
-#         'accuracy': accuracy,
-#         'precision': precision,
-#         'recall': recall,
-#         'f1': f1
-#     }
+    def train_epoch(self, train_loader: DataLoader) -> Tuple[float, float]:
+        """Train for one epoch"""
+        self.model.train()
+        total_loss = 0
+        correct = 0
+        total = 0
+        
+        for X_batch, y_batch in train_loader:
+            X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
+            
+            # Forward pass
+            self.optimizer.zero_grad()
+            outputs = self.model(X_batch).squeeze()
+            loss = self.criterion(outputs, y_batch)
+            
+            # Backward pass
+            loss.backward()
+            self.optimizer.step()
+            
+            # Statistics
+            total_loss += loss.item()
+            predictions = (outputs >= 0.5).float()
+            correct += (predictions == y_batch).sum().item()
+            total += len(y_batch)
+        
+        return total_loss / len(train_loader), correct / total
+    
+    def validate(self, val_loader: DataLoader) -> Tuple[float, float]:
+        """Validate the model"""
+        self.model.eval()
+        total_loss = 0
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for X_batch, y_batch in val_loader:
+                X_batch, y_batch = X_batch.to(self.device), y_batch.to(self.device)
+                outputs = self.model(X_batch).squeeze()
+                loss = self.criterion(outputs, y_batch)
+                
+                total_loss += loss.item()
+                predictions = (outputs >= 0.5).float()
+                correct += (predictions == y_batch).sum().item()
+                total += len(y_batch)
+        
+        return total_loss / len(val_loader), correct / total
+    
+    def train(self, 
+              X_train: np.ndarray, 
+              y_train: np.ndarray,
+              X_val: Optional[np.ndarray] = None,
+              y_val: Optional[np.ndarray] = None,
+              epochs: int = 100,
+              early_stopping_patience: int = 10):
+        """Train the model with early stopping"""
+        
+        # Preprocess data
+        X_train_scaled, y_train = self.preprocess_data(X_train, y_train)
+        if X_val is not None and y_val is not None:
+            X_val_scaled, y_val = self.preprocess_data(X_val, y_val, is_training=False)
+            
+        # Create data loaders
+        train_dataset = CustomDataset(X_train_scaled, y_train)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        
+        if X_val is not None:
+            val_dataset = CustomDataset(X_val_scaled, y_val)
+            val_loader = DataLoader(val_dataset, batch_size=self.batch_size)
+        
+        # Early stopping variables
+        best_val_loss = float('inf')
+        patience_counter = 0
+        
+        # Training loop
+        for epoch in range(epochs):
+            train_loss, train_acc = self.train_epoch(train_loader)
+            
+            if X_val is not None:
+                val_loss, val_acc = self.validate(val_loader)
+                
+                # Early stopping
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    # Save best model
+                    torch.save(self.model.state_dict(), 'best_model.pth')
+                else:
+                    patience_counter += 1
+                
+                # Print progress
+                print(f'Epoch {epoch+1}/{epochs}:',
+                      f'train_loss={train_loss:.4f},',
+                      f'train_acc={train_acc:.4f},',
+                      f'val_loss={val_loss:.4f},',
+                      f'val_acc={val_acc:.4f}')
+                
+                # Store history
+                self.history['train_loss'].append(train_loss)
+                self.history['val_loss'].append(val_loss)
+                self.history['train_acc'].append(train_acc)
+                self.history['val_acc'].append(val_acc)
+                
+                # Early stopping check
+                if patience_counter >= early_stopping_patience:
+                    print(f'Early stopping triggered after {epoch+1} epochs')
+                    # Load best model
+                    self.model.load_state_dict(torch.load('best_model.pth'))
+                    break
+            else:
+                print(f'Epoch {epoch+1}/{epochs}:',
+                      f'train_loss={train_loss:.4f},',
+                      f'train_acc={train_acc:.4f}')
+                
+                self.history['train_loss'].append(train_loss)
+                self.history['train_acc'].append(train_acc)
+    
+    def predict(self, X: np.ndarray, threshold: float = 0.5) -> np.ndarray:
+        """Make predictions"""
+        X_scaled = self.preprocess_data(X, is_training=False)
+        self.model.eval()
+        
+        with torch.no_grad():
+            X_tensor = torch.FloatTensor(X_scaled).to(self.device)
+            outputs = self.model(X_tensor).squeeze()
+            predictions = (outputs >= threshold).cpu().numpy().astype(int)
+        
+        return predictions
+    
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """Get prediction probabilities"""
+        X_scaled = self.preprocess_data(X, is_training=False)
+        self.model.eval()
+        
+        with torch.no_grad():
+            X_tensor = torch.FloatTensor(X_scaled).to(self.device)
+            probas = self.model(X_tensor).squeeze().cpu().numpy()
+        
+        return probas
+    
+    def plot_training_history(self):
+        """Plot training history"""
+        plt.figure(figsize=(12, 4))
+        
+        # Plot loss
+        plt.subplot(1, 2, 1)
+        plt.plot(self.history['train_loss'], label='Train Loss')
+        if 'val_loss' in self.history and len(self.history['val_loss']) > 0:
+            plt.plot(self.history['val_loss'], label='Validation Loss')
+        plt.title('Training Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.legend()
+        
+        # Plot accuracy
+        plt.subplot(1, 2, 2)
+        plt.plot(self.history['train_acc'], label='Train Accuracy')
+        if 'val_acc' in self.history and len(self.history['val_acc']) > 0:
+            plt.plot(self.history['val_acc'], label='Validation Accuracy')
+        plt.title('Training Accuracy')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.legend()
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def evaluate(self, X: np.ndarray, y: np.ndarray, threshold: float = 0.5):
+        """Evaluate model performance"""
+        # Get predictions
+        y_pred = self.predict(X, threshold)
+        y_proba = self.predict_proba(X)
+        
+        # Print classification report
+        print("\nClassification Report:")
+        print("----------------------")
+        print(classification_report(y, y_pred))
+        
+        # Print confusion matrix
+        print("\nConfusion Matrix:")
+        print("----------------")
+        cm = confusion_matrix(y, y_pred)
+        print(cm)
+        
+        # Plot confusion matrix
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title('Confusion Matrix')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.show()
+        
+        # Plot ROC curve
+        fpr, tpr, _ = roc_curve(y, y_proba)
+        roc_auc = auc(fpr, tpr)
+        
+        plt.figure(figsize=(8, 6))
+        plt.plot(fpr, tpr, color='darkorange', lw=2, 
+                label=f'ROC curve (AUC = {roc_auc:.2f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver Operating Characteristic (ROC) Curve')
+        plt.legend(loc="lower right")
+        plt.show()
 
-# def train_and_evaluate(train_data_path, test_data_path, val_size=0.2):
-#     """Train and evaluate XGBoost model"""
-#     # Load data
-#     df_train = pd.read_csv(train_data_path)
-#     X = df_train.drop('Label', axis=1)
-#     y = df_train['Label']
+def load_and_prepare_data(train_path: str, test_path: str, target_column: str, 
+                         val_size: float = 0.2, random_state: int = 42):
+    """
+    Load and prepare data from CSV files
     
-#     # Split into train and validation
-#     X_train, X_val, y_train, y_val = train_test_split(
-#         X, y, test_size=val_size, random_state=42, stratify=y
+    Parameters:
+    train_path: Path to training CSV file
+    test_path: Path to test CSV file
+    target_column: Name of the target column
+    val_size: Proportion of training data to use for validation
+    random_state: Random seed for reproducibility
+    """
+    # Load data
+    train_data = pd.read_csv(train_path)
+    test_data = pd.read_csv(test_path)
+    
+    # Separate features and target
+    X_train_full = train_data.drop(columns=[target_column])
+    y_train_full = train_data[target_column]
+    
+    X_test = test_data.drop(columns=[target_column])
+    y_test = test_data[target_column]
+    
+    # Split training data into train and validation sets
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train_full, y_train_full, 
+        test_size=val_size, 
+        random_state=random_state
+    )
+    
+    return X_train, X_val, X_test, y_train, y_val, y_test
+# def main():
+#     # Set random seed for reproducibility
+#     torch.manual_seed(42)
+#     np.random.seed(42)
+    
+#     # Load and prepare data
+#     X_train, X_val, X_test, y_train, y_val, y_test = load_and_prepare_data(
+#         train_path='train_data.csv',
+#         test_path='test_data.csv',
+#         target_column='Label'  # Replace with your target column name
 #     )
     
-#     print(f"Training set shape: {X_train.shape}")
-#     print(f"Validation set shape: {X_val.shape}")
-    
-#     # Model parameters
-#     params = {
-#         'learning_rate': 0.1,
-#         'max_depth': 6,
-#         'subsample': 0.8,
-#         'reg_lambda': 1.5,
-#         'gamma': 0.1,
-#         'min_child_weight': 25,
-#         'base_score': 0.0,
-#     }
+#     # Initialize and train model
+#     mlp = MLPClassifier(
+#         input_size=X_train.shape[1],  # Number of features
+#         hidden_layers=[128, 64, 32],
+#         learning_rate=0.001,
+#         batch_size=32,
+#         dropout_rate=0.2
+#     )
     
 #     # Train model
-#     model = XGBoostModel(params, random_seed=42)
-#     loss_history = model.fit(
-#         X_train, y_train,
-#         SquaredErrorObjective(),
-#         num_boost_round=100,
-#         verbose=True
-#     )
+#     mlp.train(X_train, y_train, X_val, y_val, epochs=100, early_stopping_patience=25)
     
-#     # Plot training loss
-#     plt.figure(figsize=(10, 6))
-#     plt.plot(loss_history)
-#     plt.xlabel('Boost Round')
-#     plt.ylabel('Training Loss')
-#     plt.title('Training Loss vs Boosting Rounds')
-#     plt.show()
+#     # Plot training history
+#     mlp.plot_training_history()
     
-#     # Make predictions
-#     train_pred = model.predict(X_train)
-#     val_pred = model.predict(X_val)
-    
-#     # Plot training/validation confusion matrices
-#     plot_confusion_matrix(y_train, train_pred, 'Training Set')
-#     plot_confusion_matrix(y_val, val_pred, 'Validation Set')
-    
-#     # Calculate metrics
-#     train_metrics = calculate_metrics(y_train, train_pred)
-#     val_metrics = calculate_metrics(y_val, val_pred)
-    
-#     print("\nTraining Set Metrics:")
-#     for metric, value in train_metrics.items():
-#         print(f"{metric.capitalize()}: {value:.4f}")
-    
-#     print("\nValidation Set Metrics:")
-#     for metric, value in val_metrics.items():
-#         print(f"{metric.capitalize()}: {value:.4f}")
+#     # Evaluate on training set
+#     print("\nTraining Set Evaluation:")
+#     print("------------------------")
+#     mlp.evaluate(X_train, y_train)
+
+#     # Evaluate on validation set
+#     print("\nValidation Set Evaluation:")
+#     print("-------------------------")
+#     mlp.evaluate(X_val, y_val)
     
 #     # Evaluate on test set
-#     df_test = pd.read_csv(test_data_path)
-#     X_test = df_test.drop('Label', axis=1)
-#     y_test = df_test['Label']
+#     print("\nTest Set Evaluation:")
+#     print("-------------------")
+#     mlp.evaluate(X_test, y_test)
     
-#     test_pred = model.predict(X_test)
-#     plot_confusion_matrix(y_test, test_pred, 'Test Set')
+#     # Print final summary
+#     print("\nFinal Model Performance Summary:")
+#     print("--------------------------------")
     
-#     test_metrics = calculate_metrics(y_test, test_pred)
-#     print("\nTest Set Metrics:")
-#     for metric, value in test_metrics.items():
-#         print(f"{metric.capitalize()}: {value:.4f}")
+#     # Calculate and display metrics for all sets
+#     train_pred = mlp.predict(X_train)
+#     val_pred = mlp.predict(X_val)
+#     test_pred = mlp.predict(X_test)
     
-#     return {
-#         'model': model,
-#         'loss_history': loss_history,
-#         'predictions': {
-#             'train': train_pred,
-#             'val': val_pred,
-#             'test': test_pred
-#         },
-#         'metrics': {
-#             'train': train_metrics,
-#             'val': val_metrics,
-#             'test': test_metrics
-#         }
-#     }
+#     train_acc = (train_pred == y_train).mean()
+#     val_acc = (val_pred == y_val).mean()
+#     test_acc = (test_pred == y_test).mean()
+    
+#     print(f"Training Accuracy: {train_acc:.4f}")
+#     print(f"Validation Accuracy: {val_acc:.4f}")
+#     print(f"Test Accuracy: {test_acc:.4f}")
+    
+#     # Check for potential overfitting
+#     if train_acc - test_acc > 0.05:  # If training accuracy is significantly higher
+#         print("\nNote: There might be some overfitting as the training accuracy is")
+#         print(f"significantly higher than the test accuracy (difference: {train_acc - test_acc:.4f})")
+#         print("Consider:")
+#         print("- Increasing dropout rate")
+#         print("- Reducing model complexity")
+#         print("- Adding more training data")
+#         print("- Using stronger regularization")
 
-# Example usage
-if __name__ == "__main__":
-    results = train_and_evaluate(
-        train_data_path='train_data.csv',
-        test_data_path='test_data.csv'
+# if __name__ == "__main__":
+#     main()
+
+def main():
+    # Set random seed for reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+    
+    # Load and prepare data
+    X_train, X_val, X_test, y_train, y_val, y_test = load_and_prepare_data(
+        train_path='train_data.csv',
+        test_path='test_data.csv',
+        target_column='Label'  # Replace with your target column name
     )
+    
+    # Initialize and train model
+    mlp = MLPClassifier(
+        input_size=X_train.shape[1],  # Number of features
+        hidden_layers=[128, 64, 32],
+        learning_rate=0.001,
+        batch_size=32,
+        dropout_rate=0.2
+    )
+    
+    # Train model
+    mlp.train(X_train, y_train, X_val, y_val, epochs=100, early_stopping_patience=10)
+    
+    # Plot training history
+    mlp.plot_training_history()
+    
+    # Evaluate model
+    print("\nTest Set Evaluation:")
+    print("-------------------")
+    mlp.evaluate(X_test, y_test)
+
+if __name__ == "__main__":
+    main()
