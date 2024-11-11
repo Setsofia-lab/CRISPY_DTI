@@ -1,10 +1,8 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 from collections import defaultdict
-from preProcess import df_embeddings
 
 class SquaredErrorObjective():
     def loss(self, y, pred): return np.mean((y - pred)**2)
@@ -13,61 +11,31 @@ class SquaredErrorObjective():
 
 def prepare_embeddings_for_xgboost(df_embeddings):
     """
-    Prepare the concatenated embeddings for XGBoost training
+    Prepare the pre-processed embeddings for XGBoost training
     
     Parameters:
     -----------
     df_embeddings : pandas.DataFrame
-        DataFrame containing protein and molecular fingerprint embeddings with labels
+        DataFrame containing pre-processed embeddings and labels
     
     Returns:
     --------
-    dict : Dictionary containing processed train/test data and scalers
+    dict : Dictionary containing train/test splits
     """
     # Separate features and labels
     X = df_embeddings.drop('Label', axis=1)
     y = df_embeddings['Label']
     
-    # Split embeddings by type
-    feature_sizes = {
-        'protein': len(X.filter(like='Target').columns),
-        'MACCS': len(X.filter(like='MACCS').columns),
-        'MF': len(X.filter(like='MF').columns),
-        'TFF': len(X.filter(like='TFF').columns),
-        'PF': len(X.filter(like='PF').columns),
-        'APF': len(X.filter(like='APF').columns)
-    }
-    
-    # Initialize scalers dictionary
-    scalers = {}
-    scaled_features = []
-    current_pos = 0
-    
-    # Scale each embedding type separately
-    for name, size in feature_sizes.items():
-        if size > 0:
-            features = X.iloc[:, current_pos:current_pos + size]
-            scaler = StandardScaler()
-            scaled = scaler.fit_transform(features)
-            scaled_features.append(pd.DataFrame(scaled))
-            scalers[name] = scaler
-            current_pos += size
-    
-    # Combine scaled features
-    X_scaled = pd.concat(scaled_features, axis=1)
-    
     # Split the data
     X_train, X_test, y_train, y_test = train_test_split(
-        X_scaled, y, test_size=0.2, random_state=42, stratify=y
+        X, y, test_size=0.2, random_state=42, stratify=y
     )
     
     return {
         'X_train': X_train,
         'X_test': X_test,
         'y_train': y_train,
-        'y_test': y_test,
-        'scalers': scalers,
-        'feature_sizes': feature_sizes
+        'y_test': y_test
     }
 
 class XGBoostModel():
@@ -193,12 +161,12 @@ class TreeBooster():
 
 def train_dti_model(df_embeddings, params=None, num_boost_round=100, verbose=True):
     """
-    Train XGBoost model on DTI embeddings
+    Train XGBoost model on pre-processed DTI embeddings
     
     Parameters:
     -----------
     df_embeddings : pandas.DataFrame
-        DataFrame containing concatenated embeddings and labels
+        DataFrame containing pre-processed embeddings and labels
     params : dict
         XGBoost parameters
     num_boost_round : int
@@ -224,8 +192,12 @@ def train_dti_model(df_embeddings, params=None, num_boost_round=100, verbose=Tru
     # Prepare data
     processed_data = prepare_embeddings_for_xgboost(df_embeddings)
     
+    # Print data shapes
+    print(f"\nTraining data shape: {processed_data['X_train'].shape}")
+    print(f"Testing data shape: {processed_data['X_test'].shape}")
+    
     # Initialize and train model
-    model = XGBoostModel(params, random_state=42)
+    model = XGBoostModel(params, random_seed=42)
     results = model.fit(
         processed_data['X_train'],
         processed_data['y_train'],
@@ -270,13 +242,18 @@ def train_dti_model(df_embeddings, params=None, num_boost_round=100, verbose=Tru
 
 # Example usage
 if __name__ == "__main__":
+    # Load pre-processed embeddings
+    df_embeddings = pd.read_csv('train_data.csv')
+    print(f"Loaded data shape: {df_embeddings.shape}")
     
     # Train model
-    results = train_dti_model(df_embeddings)
-    
-    print(f"\nFinal Results:")
-    print(f"Train Loss: {results['train_loss']:.6f}")
-    print(f"Test Loss: {results['test_loss']:.6f}")
+    try:
+        results = train_dti_model(df_embeddings)
+        print(f"\nFinal Results:")
+        print(f"Train Loss: {results['train_loss']:.6f}")
+        print(f"Test Loss: {results['test_loss']:.6f}")
+    except Exception as e:
+        print(f"Error during model training: {str(e)}")
 
 
 
