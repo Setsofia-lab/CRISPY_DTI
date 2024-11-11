@@ -335,77 +335,7 @@ def load_and_prepare_data(train_path: str, test_path: str, target_column: str,
     )
     
     return X_train, X_val, X_test, y_train, y_val, y_test
-# def main():
-#     # Set random seed for reproducibility
-#     torch.manual_seed(42)
-#     np.random.seed(42)
-    
-#     # Load and prepare data
-#     X_train, X_val, X_test, y_train, y_val, y_test = load_and_prepare_data(
-#         train_path='train_data.csv',
-#         test_path='test_data.csv',
-#         target_column='Label'  # Replace with your target column name
-#     )
-    
-#     # Initialize and train model
-#     mlp = MLPClassifier(
-#         input_size=X_train.shape[1],  # Number of features
-#         hidden_layers=[128, 64, 32],
-#         learning_rate=0.001,
-#         batch_size=32,
-#         dropout_rate=0.2
-#     )
-    
-#     # Train model
-#     mlp.train(X_train, y_train, X_val, y_val, epochs=100, early_stopping_patience=25)
-    
-#     # Plot training history
-#     mlp.plot_training_history()
-    
-#     # Evaluate on training set
-#     print("\nTraining Set Evaluation:")
-#     print("------------------------")
-#     mlp.evaluate(X_train, y_train)
 
-#     # Evaluate on validation set
-#     print("\nValidation Set Evaluation:")
-#     print("-------------------------")
-#     mlp.evaluate(X_val, y_val)
-    
-#     # Evaluate on test set
-#     print("\nTest Set Evaluation:")
-#     print("-------------------")
-#     mlp.evaluate(X_test, y_test)
-    
-#     # Print final summary
-#     print("\nFinal Model Performance Summary:")
-#     print("--------------------------------")
-    
-#     # Calculate and display metrics for all sets
-#     train_pred = mlp.predict(X_train)
-#     val_pred = mlp.predict(X_val)
-#     test_pred = mlp.predict(X_test)
-    
-#     train_acc = (train_pred == y_train).mean()
-#     val_acc = (val_pred == y_val).mean()
-#     test_acc = (test_pred == y_test).mean()
-    
-#     print(f"Training Accuracy: {train_acc:.4f}")
-#     print(f"Validation Accuracy: {val_acc:.4f}")
-#     print(f"Test Accuracy: {test_acc:.4f}")
-    
-#     # Check for potential overfitting
-#     if train_acc - test_acc > 0.05:  # If training accuracy is significantly higher
-#         print("\nNote: There might be some overfitting as the training accuracy is")
-#         print(f"significantly higher than the test accuracy (difference: {train_acc - test_acc:.4f})")
-#         print("Consider:")
-#         print("- Increasing dropout rate")
-#         print("- Reducing model complexity")
-#         print("- Adding more training data")
-#         print("- Using stronger regularization")
-
-# if __name__ == "__main__":
-#     main()
 
 def main():
     # Set random seed for reproducibility
